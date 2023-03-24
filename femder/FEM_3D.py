@@ -5,6 +5,7 @@ Created on Sat Nov 28 23:33:54 2020
 @author: Luiz Augusto Alvim & Paulo Mareze
 """
 import numpy as np
+import numpy.matlib
 from scipy.sparse.linalg import spsolve
 from pyMKL import pardisoSolver
 
@@ -349,12 +350,13 @@ def assemble_Q_H_4_FAST(NumElemC,NumNosC,elem_vol,nos,c0,rho0):
     return H,Q
 
 
-@jit
+#@jit
 def assemble_Q_H_4_FAST_equifluid(NumElemC,NumNosC,elem_vol,nos,c,rho,domain_index_vol,fi):
+#Cálculo das matrizes elementares de todos os elemento p cada freq
 
-    Hez = np.zeros([4,4,NumElemC],dtype='cfloat')
+    Hez = np.zeros([4,4,NumElemC],dtype='cfloat') 
     Qez = np.zeros([4,4,NumElemC],dtype='cfloat')
-    for e in range(NumElemC):
+    for e in tqdm(range(NumElemC)):
         con = elem_vol[e,:]
         coord_el = nos[con,:]
         
@@ -415,7 +417,6 @@ def assemble_Q_H_4_FAST_2order(NumElemC,NumNosC,elem_vol,nos,c0,rho0):
     H = H.tocsc()
     Q = Q.tocsc()
     return H,Q
-
 def assemble_Q_H_4_FAST_2order_equifluid(NumElemC,NumNosC,elem_vol,nos,c,rho,domain_index_vol,fi):
 
     Hez = np.zeros([10,10,NumElemC])
@@ -534,8 +535,7 @@ def assemble_A_3_FAST(domain_index_surf,number_ID_faces,NumElemC,NumNosC,elem_su
             Ae = int_tri_impedance_3gauss(coord_el)
             A[con[:,np.newaxis],con] = A[con[:,np.newaxis],con] + Ae
         Aa.append(csc_matrix(A))
-  
-       
+
     return Aa
 
 def assemble_A10_3_FAST(domain_index_surf,number_ID_faces,NumElemC,NumNosC,elem_surf,nos,c0,rho0):
@@ -770,7 +770,7 @@ def area_normal_ph(re):
 
     return area_elm
 
-def int_tetra_4gauss(coord_el,c0,rho0):
+def int_tetra_4gauss(coord_el,c,rho):
 
     He = np.zeros([4,4],dtype='cfloat')
     Qe = np.zeros([4,4],dtype='cfloat')
@@ -787,8 +787,8 @@ def int_tetra_4gauss(coord_el,c0,rho0):
     GNi = np.array([[-1,1,0,0],[-1,0,1,0],[-1,0,0,1]])
     Ja = (GNi@coord_el)
     detJa =  np.linalg.det(Ja)
-    B = (np.linalg.inv(Ja)@GNi)
-    argHe1 = (1/rho0)*(np.transpose(B)@B)*detJa
+    B = (np.linalg.inv(Ja)@GNi) 
+    argHe1 = (1/rho)*(np.transpose(B)@B)*detJa
     weigths = 1/24
 
     qsi = np.zeros([3,1]).ravel()
@@ -799,7 +799,7 @@ def int_tetra_4gauss(coord_el,c0,rho0):
                 
         Ni = np.array([[1-qsi[0]-qsi[1]-qsi[2]],[qsi[0]],[qsi[1]],[qsi[2]]],dtype=np.complex64)
 
-        argQe1 = (1/(rho0*c0**2))*(Ni@np.transpose(Ni))*detJa
+        argQe1 = (1/(rho*c**2))*(Ni@np.transpose(Ni))*detJa
         
         He = He + weigths*argHe1   
         Qe = Qe + weigths*argQe1 
@@ -1162,7 +1162,8 @@ class FEM3D:
         if BC != None:
             self.mu = BC.mu
             self.v = BC.v
-        
+            if len(Grid.number_ID_vol) > 1:
+                self.domain_index = BC.domain_index
         
         #AirProperties
         self.freq = AC.freq
@@ -1174,6 +1175,7 @@ class FEM3D:
         self.rho0 = AP.rho0
         
         self.S = S
+        self.q = S.q
         self.R = R
         #%Mesh
         if Grid != None:
@@ -1202,22 +1204,28 @@ class FEM3D:
         self.c = {}
         
         if len(self.BC.rhoc) > 0:
-            rhoc_keys=np.array([*self.BC.rhoc])[0]
+            #rhoc_keys=np.array([*self.BC.rhoc])[0]
             rho0_keys = self.number_ID_vol
-            rho_list = np.setdiff1d(rho0_keys,rhoc_keys)
-            for i in rho_list:
-                self.rho[i] = np.ones_like(self.freq)*self.rho0
-                
-            self.rho.update(self.BC.rhoc)
+            #rho_list = np.setdiff1d(rho0_keys,rhoc_keys)
+            for count, value in enumerate(rho0_keys):
+                if value==self.domain_index:
+                    self.rho[value] = self.BC.rhoc
+                else:
+                    self.rho[value] = np.ones_like(self.freq)*self.rho0
+                    
+            #self.rho.update(self.BC.rhoc)
             
         if len(self.BC.cc) > 0:
-            cc_keys=np.array([*self.BC.cc])[0]
+            #cc_keys=np.array([*self.BC.cc])[0]
             c0_keys = self.number_ID_vol
-            cc_list = np.setdiff1d(c0_keys,cc_keys)
-            for i in cc_list:
-                self.c[i] = np.ones_like(self.freq)*self.c0
-                
-            self.c.update(self.BC.cc)
+            #cc_list = np.setdiff1d(c0_keys,cc_keys)
+            for count, value in enumerate(c0_keys):
+                if value==self.domain_index:
+                    self.c[value] = self.BC.cc
+                else:
+                    self.c[value] = np.ones_like(self.freq)*self.c0
+      
+            #self.c.update(self.BC.cc)
 
     @property
     def spl(self):
@@ -1263,21 +1271,26 @@ class FEM3D:
         #     self.H = np.zeros([self.NumNosC,self.NumNosC],dtype =  np.cfloat)
         #     self.Q = np.zeros([self.NumNosC,self.NumNosC],dtype =  np.cfloat)
         # self.A = np.zeros([self.NumNosC,self.NumNosC,len(self.number_ID_faces)],dtype =  np.cfloat)
-        self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)
+        # self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)
+        if len(self.S.q.shape)>1:
+            self.q = np.zeros([self.NumNosC,len(self.freq)],dtype = np.cfloat)
+        else:
+            self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)  
+
         self.areas = compute_areas(self.nos, self.elem_surf)
         if len(self.rho) == 0:
             if self.H is None:
                 if self.order == 1:
                     # self.H,self.Q = assemble_Q_H_4_ULTRAFAST(self.NumElemC,self.NumNosC,self.elem_vol,self.nos,self.c0,self.rho0)
-                    fluid_c = {1: np.ones((len(self.elem_vol),)) * self.c0}
-                    fluid_rho = {1: np.ones((len(self.elem_vol),)) * self.rho0}
+                    fluid_c = {1: np.ones((len(self.elem_vol),)) * self.c0}#, 2: np.ones((len(self.elem_vol),)) * self.c0}
+                    fluid_rho = {1: np.ones((len(self.elem_vol),)) * self.rho0}#, 2: np.ones((len(self.elem_vol),)) * self.rho0}
                     det_ja, arg_stiff = fd.fem_numerical.pre_compute_volume_assemble_vars(self.elem_vol,self.nos, 1)
                     self.H,self.Q = fd.fem_numerical.assemble_volume_matrices(self.elem_vol,self.nos, fluid_c, fluid_rho, 1, self.domain_index_vol, 0, det_ja, arg_stiff)
                 elif self.order == 2:
                     self.H,self.Q = assemble_Q_H_4_FAST_2order(self.NumElemC,self.NumNosC,self.elem_vol,self.nos,self.c0,self.rho0)
                 #Assemble A(Amortecimento)
             if self.BC != None:
-                
+               
                 if self.order == 1:
                     # self.A = assemble_A_3_FAST(self.domain_index_surf,np.sort([*self.mu]),self.NumElemC,self.NumNosC,self.elem_surf,self.nos,self.c0,self.rho0)
                     self.A = assemble_surface_matrices(self.elem_surf, self.nos, self.areas, self.domain_index_surf, np.sort([*self.mu]), 1)
@@ -1297,7 +1310,10 @@ class FEM3D:
                 # print('Solving System')
                 if self.S is not None:
                     for ii in range(len(self.S.coord)):
-                        self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
+                        if len(self.q.shape)>1:
+                            self.q[closest_node(self.nos,self.S.coord[ii,:]),:] = self.S.q[ii].ravel()
+                        else:
+                            self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
                     
                 self.q = csc_matrix(self.q)
                 if len(self.v) == 0:
@@ -1310,7 +1326,10 @@ class FEM3D:
                             Ag += self.A[i]*self.mu[bl].ravel()[N]#/(self.rho0*self.c0)
                             i+=1
                         G = self.H + 1j*self.w[N]*Ag - (self.w[N]**2)*self.Q
-                        b = -1j*self.w[N]*self.q
+                        if len(self.S.q.shape)>1:
+                            b = -1j*self.w[N]*self.q[:,N]
+                        else: 
+                            b = -1j*self.w[N]*self.q
                         # ps = spsolve(G,b)
                         pSolve = pardisoSolver(G, mtype=13)
                         pSolve.run_pardiso(12)
@@ -1363,9 +1382,10 @@ class FEM3D:
                     pSolve.run_pardiso(12)
                     ps = pSolve.run_pardiso(33, b.todense())
                     pSolve.clear()
-                    pN.append(ps)
+                    pN.append(ps) 
         else:
-            if self.BC != None:
+            if len(self.mu) != 0:
+            #if self.BC != None:
     
                 if self.order == 1:
                     self.A = assemble_A_3_FAST(self.domain_index_surf,self.number_ID_faces,self.NumElemC,self.NumNosC,self.elem_surf,self.nos,self.c0,self.rho0)
@@ -2076,15 +2096,42 @@ class FEM3D:
 
         for i in range(len(self.R.coord)):
             closest_node_to_receiver = closest_node(self.nos, self.R.coord[i, :])
-            pt_dist = np.linalg.norm(
-                    self.R.coord[i, :] - self.nos[closest_node_to_receiver])
-            print(pt_dist)
-            if pt_dist < interpolation_tolerance:
+            if np.linalg.norm(
+                    self.R.coord[i, :] - self.nos[closest_node_to_receiver]) < interpolation_tolerance:
                 self.pR.append(self.pN[:, closest_node(self.nos, R.coord[i, :])])
             else:
                 self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R.coord[i, :], self.pN))
         self.pR = np.asarray(self.pR).squeeze().T
+        # print(self.pR.shape)
 
+        # if plot:
+        #     plt.style.use('seaborn-notebook')
+        #     plt.figure(figsize=(5*1.62,5))
+        #     if len(self.pR[0,:]) > 1:
+        #         linest = ':'
+        #     else:
+        #         linest = '-'
+        #     for i in range(len(self.R.coord)):
+        #         closest_node_to_receiver = closest_node(self.nos, self.R[i, :])
+        #         if np.linalg.norm(
+        #                 self.R[i, :] - self.vertices[closest_node_to_receiver]) < interpolation_tolerance:
+        #             self.pR.append(self.pN[:,closest_node(self.nos,R.coord[i,:])])
+        #         else:
+        #             self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R[i, :], self.pN))
+        #         # self.pR[:,i] = coord_interpolation(self.nos, self.elem_vol, R.coord[i,:], self.pN)
+        #         # plt.semilogx(self.freq,p2SPL(self.pR[:,i]),linestyle = linest,label=f'R{i} | {self.R.coord[i,:]}m')
+        #
+        #     # if len(self.R.coord) > 1:
+        #     #     plt.semilogx(self.freq,np.mean(p2SPL(self.pR),axis=1),label='Average',linewidth = 5)
+        #     #
+        #     plt.grid()
+        #     plt.legend()
+        #     plt.xlabel('Frequency[Hz]')
+        #     plt.ylabel('SPL [dB]')
+        #     # plt.show()
+        # else:
+        #     for i in range(len(self.R.coord)):
+        #         self.pR[:,i] = self.pN[:,closest_node(self.nos,R.coord[i,:])]
         if len(self.pR.shape) == 1:
             self.pR = self.pR.reshape(self.pN.shape[0],1)
         return self.pR
@@ -2307,12 +2354,12 @@ class FEM3D:
                     fig.write_image(filename + f'_3D_{camera}_.{extension}', scale=2)
             else:
                 fig.write_image(filename+'.'+extension, scale=2)
-        fig.show()
+        #fig.show()
         return fig
     def pressure_field(self, Pmin=None, frequencies=[60], Pmax=None, axis=['xy', 'yz', 'xz', 'boundary'],
                        axis_visibility={'xy': True, 'yz': True, 'xz': 'legendonly', 'boundary': True},
                        coord_axis={'xy': None, 'yz': None, 'xz': None, 'boundary': None}, dilate_amount=0.9,
-                       view_planes=False, gridsize=0.1, gridColor="rgb(230, 230, 255)",
+                       view_planes=False, gridsize=0.1, gridColor="rgb(2 30, 230, 255)",
                        opacity=0.2, opacityP=1, hide_dots=False, figsize=(950, 800),
                        showbackground=True, showlegend=True, showedges=True, colormap='jet',
                        saveFig=False,extension='png',room_opacity=0.3, colorbar=True, showticklabels=True, info=True, title=True,
@@ -2441,14 +2488,10 @@ class FEM3D:
         path_name = os.path.dirname(path_to_geo)
         tgv = gmsh.model.getEntities(3)
         # ab = gmsh.model.getBoundingBox(3, tgv[0][1])
-    
-        xmin = np.amin(self.nos[:,0])
-        xmax = np.amax(self.nos[:,0])
-        ymin = np.amin(self.nos[:,1])
-        ymax = np.amax(self.nos[:,1])
+        
         zmin = np.amin(self.nos[:,2])
-        zmax = np.amax(self.nos[:,2])
-    
+        zmax = np.amax(self.nos[:,2]) 
+        
         if coord_axis['xy'] is None:
             coord_axis['xy'] = self.R.coord[0, 2] - 0.01
     
@@ -2461,14 +2504,24 @@ class FEM3D:
         if coord_axis['boundary'] is None:
             coord_axis['boundary'] = (zmin + zmax) / 2
         # with suppress_stdout():
+            
+        xmin = np.amin(self.nos[:,0]) 
+        xmax = np.amax(self.nos[:,0]) 
+        ymin = np.amin(self.nos[:,1])
+        ymax = np.amax(self.nos[:,1])
+        
+        #indx = np.extract(self.nos[:,1] == ymax and self.nos[:,2] == self.nos[closest_node(self.nos, coord_axis['xy']),2]) #fixar a coordenada z?
+        #xmax_m = self.nos[indx,0]
+
+
         if 'xy' in axis:
             gmsh.clear()
             gmsh.open(path_to_geo)
             tgv = gmsh.model.getEntities(3)
-            gmsh.model.occ.addPoint(xmin, ymin, coord_axis['xy'], 0., 3001)
-            gmsh.model.occ.addPoint(xmax, ymin, coord_axis['xy'], 0., 3002)
-            gmsh.model.occ.addPoint(xmax, ymax, coord_axis['xy'], 0., 3003)
-            gmsh.model.occ.addPoint(xmin, ymax, coord_axis['xy'], 0., 3004)
+            gmsh.model.occ.addPoint(0.4752238-0.1, 0.3-0.1, 0.03, 0., 3001)
+            gmsh.model.occ.addPoint(1.075224+0.1, 0.3-0.1, 0.03, 0., 3002)
+            gmsh.model.occ.addPoint(1.075224+0.1, 0.9+0.1, 0.03, 0., 3003) #alterado para o caso da minicamara
+            gmsh.model.occ.addPoint(0.4752238-0.1, 0.9+0.1, 0.03, 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
@@ -2478,6 +2531,19 @@ class FEM3D:
             gmsh.model.addPhysicalGroup(2, [15000], 15000)
     
             gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+            # gmsh.model.occ.addPoint(xmin, ymin, coord_axis['xy'], 0., 3001)
+            # gmsh.model.occ.addPoint(xmax, ymin, coord_axis['xy'], 0., 3002)
+            # gmsh.model.occ.addPoint(xmax-0.25, ymax, coord_axis['xy'], 0., 3003) #alterado para o caso da minicamara
+            # gmsh.model.occ.addPoint(xmin, ymax, coord_axis['xy'], 0., 3004)
+            # gmsh.model.occ.addLine(3001, 3004, 3001)
+            # gmsh.model.occ.addLine(3004, 3003, 3002)
+            # gmsh.model.occ.addLine(3003, 3002, 3003)
+            # gmsh.model.occ.addLine(3002, 3001, 3004)
+            # gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+            # gmsh.model.occ.addPlaneSurface([15000], 15000)
+            # gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+            # gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
     
             # gmsh.model.occ.dilate([(2, 15000)],
             #                       (xmin + xmax) / 2, (ymin + ymax) / 2, coord_axis['xy'],
@@ -2495,8 +2561,37 @@ class FEM3D:
             tgv = gmsh.model.getEntities(3)
             gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmin, 0., 3001)
             gmsh.model.occ.addPoint(coord_axis['yz'], ymax, zmin, 0., 3002)
-            gmsh.model.occ.addPoint(coord_axis['yz'], ymax, zmax, 0., 3003)
+            gmsh.model.occ.addPoint(coord_axis['yz'], ymax, 0.9, 0., 3003) # modificado caso da minicamara
             gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmax, 0., 3004)
+            gmsh.model.occ.addLine(3001, 3004, 3001)
+            gmsh.model.occ.addLine(3004, 3003, 3002)
+            gmsh.model.occ.addLine(3003, 3002, 3003)
+            gmsh.model.occ.addLine(3002, 3001, 3004)
+            gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+            gmsh.model.occ.addPlaneSurface([15000], 15000)
+            gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+            gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    
+            # gmsh.model.occ.dilate([(2, 15000)],
+            #                       coord_axis['yz'], (ymin + ymax) / 2, coord_axis['boundary'],
+            #                       dilate_amount, dilate_amount, dilate_amount)
+            gmsh.model.occ.synchronize()
+            gmsh.model.mesh.generate(2)
+            # gmsh.write(path_name + 'current_field_yz.msh')
+            # gmsh.write(outputs + 'current_field_yz.brep')
+            vtags, vyz, _ = gmsh.model.mesh.getNodes()
+            nyz = vyz.reshape((-1, 3))
+            elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
+            nyzsurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
+            
+            gmsh.clear()
+            gmsh.open(path_to_geo)
+            tgv = gmsh.model.getEntities(3)
+            gmsh.model.occ.addPoint(0.8, ymin, zmin, 0., 3001)
+            gmsh.model.occ.addPoint(0.8, ymax, zmin, 0., 3002)
+            gmsh.model.occ.addPoint(0.8, ymax, 0.9, 0., 3003) # modificado caso da minicamara
+            gmsh.model.occ.addPoint(0.8, ymin, zmax, 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
@@ -2525,9 +2620,9 @@ class FEM3D:
             gmsh.open(path_to_geo)
             tgv = gmsh.model.getEntities(3)
             gmsh.model.occ.addPoint(xmin, coord_axis['xz'], zmin, 0., 3001)
-            gmsh.model.occ.addPoint(xmax, coord_axis['xz'], zmin, 0., 3002)
-            gmsh.model.occ.addPoint(xmax, coord_axis['xz'], zmax, 0., 3003)
-            gmsh.model.occ.addPoint(xmin, coord_axis['xz'], zmax, 0., 3004)
+            gmsh.model.occ.addPoint(1.3, coord_axis['xz'], zmin, 0., 3002)
+            gmsh.model.occ.addPoint(1.3, coord_axis['xz'], 1.1, 0., 3003)
+            gmsh.model.occ.addPoint(xmin, coord_axis['xz'], 1.1, 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
