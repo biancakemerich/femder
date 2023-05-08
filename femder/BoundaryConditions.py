@@ -209,9 +209,9 @@ class BC():
         rhoc = ((self.AP.rho0*self.AP.c0/cc)*(1+C5*np.power(X,-C6)-1j*C7*np.power(X,-C8)))
         self.domain_index = domain_index
         if d == None:
-            self.cc = np.conj(cc)
-            self.rhoc = np.conj(rhoc)
-            return
+            self.cc = cc#np.conj(cc)
+            self.rhoc = rhoc#np.conj(rhoc)
+            return self.cc,self.rhoc
         else:
             Zs = -1j*rhoc*cc/np.tan((w/cc)*d) 
             

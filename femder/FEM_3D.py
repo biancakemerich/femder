@@ -1163,7 +1163,7 @@ class FEM3D:
             self.mu = BC.mu
             self.v = BC.v
             if len(Grid.number_ID_vol) > 1:
-                self.domain_index = BC.domain_index
+                self.domain_index = BC.domain_index 
         
         #AirProperties
         self.freq = AC.freq
@@ -1277,6 +1277,13 @@ class FEM3D:
         else:
             self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)  
 
+        if self.S is not None:
+            for ii in range(len(self.S.coord)):
+                if len(self.q.shape)>1:
+                    self.q[closest_node(self.nos,self.S.coord[ii,:]),:] = self.S.q[ii].ravel()
+                else:
+                    self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
+                    
         self.areas = compute_areas(self.nos, self.elem_surf)
         if len(self.rho) == 0:
             if self.H is None:
@@ -1308,13 +1315,7 @@ class FEM3D:
 
                 
                 # print('Solving System')
-                if self.S is not None:
-                    for ii in range(len(self.S.coord)):
-                        if len(self.q.shape)>1:
-                            self.q[closest_node(self.nos,self.S.coord[ii,:]),:] = self.S.q[ii].ravel()
-                        else:
-                            self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
-                    
+                
                 self.q = csc_matrix(self.q)
                 if len(self.v) == 0:
                     for N in tqdm(range(len(self.freq))):
@@ -1388,14 +1389,15 @@ class FEM3D:
             #if self.BC != None:
     
                 if self.order == 1:
-                    self.A = assemble_A_3_FAST(self.domain_index_surf,self.number_ID_faces,self.NumElemC,self.NumNosC,self.elem_surf,self.nos,self.c0,self.rho0)
+                    #self.A = assemble_A_3_FAST(self.domain_index_surf,self.number_ID_faces,self.NumElemC,self.NumNosC,self.elem_surf,self.nos,self.c0,self.rho0)
+                    self.A = assemble_surface_matrices(self.elem_surf, self.nos, self.areas, self.domain_index_surf, np.sort([*self.mu]), 1)
                 elif self.order == 2:
                     self.A = assemble_A10_3_FAST(self.domain_index_surf,self.number_ID_faces,self.NumElemC,self.NumNosC,self.elem_surf,self.nos,self.c0,self.rho0)
                 pN = []
                 
                 # print('Solving System')
-                for ii in range(len(self.S.coord)):
-                    self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
+                #for ii in range(len(self.S.coord)):
+                    #self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
                     
                 self.q = csc_matrix(self.q)
                 for N in tqdm(range(len(self.freq))):
@@ -1403,7 +1405,7 @@ class FEM3D:
                     # Ag = np.zeros_like(self.Q,dtype=np.cfloat)
                     i = 0
                     Ag = 0
-                    for bl in self.number_ID_faces:
+                    for bl in np.sort([*self.mu]):
                         Ag += self.A[i]*self.mu[bl].ravel()[N]#/(self.rho0*self.c0)
                         i+=1
                     if self.order == 1:
@@ -1412,12 +1414,17 @@ class FEM3D:
                         self.H,self.Q = assemble_Q_H_4_FAST_2order_equifluid(self.NumElemC,self.NumNosC,self.elem_vol,self.nos,self.c,self.rho,self.domain_index_vol,N)
                     
                     G = self.H + 1j*self.w[N]*Ag - (self.w[N]**2)*self.Q
-                    b = -1j*self.w[N]*self.q
+                    if len(self.S.q.shape)>1:
+                        b = -1j*self.w[N]*self.q[:,N]
+                    else: 
+                        b = -1j*self.w[N]*self.q
+                    #b = -1j*self.w[N]*self.q
                     pSolve = pardisoSolver(G, mtype=13)
                     pSolve.run_pardiso(12)
                     ps = pSolve.run_pardiso(33, b.todense())
                     pSolve.clear()
                     pN.append(ps)
+                    
             else:
                 pN = []
                 
@@ -2096,12 +2103,18 @@ class FEM3D:
 
         for i in range(len(self.R.coord)):
             closest_node_to_receiver = closest_node(self.nos, self.R.coord[i, :])
-            if np.linalg.norm(
-                    self.R.coord[i, :] - self.nos[closest_node_to_receiver]) < interpolation_tolerance:
-                self.pR.append(self.pN[:, closest_node(self.nos, R.coord[i, :])])
+            pt_dist = np.linalg.norm(
+                    self.R.coord[i, :] - self.nos[closest_node_to_receiver])
+            print(pt_dist)
+            if pt_dist < interpolation_tolerance:
+                self.pR.append(self.pN[:, closest_node(self.nos, R.coord[i, :])].reshape(len(self.freq),1))
             else:
                 self.pR.append(coord_interpolation(self.nos, self.elem_vol, self.R.coord[i, :], self.pN))
         self.pR = np.asarray(self.pR).squeeze().T
+
+        if len(self.pR.shape) == 1:
+            self.pR = self.pR.reshape(self.pN.shape[0],1)
+        return self.pR
         # print(self.pR.shape)
 
         # if plot:
@@ -2356,10 +2369,11 @@ class FEM3D:
                 fig.write_image(filename+'.'+extension, scale=2)
         #fig.show()
         return fig
+    
     def pressure_field(self, Pmin=None, frequencies=[60], Pmax=None, axis=['xy', 'yz', 'xz', 'boundary'],
                        axis_visibility={'xy': True, 'yz': True, 'xz': 'legendonly', 'boundary': True},
                        coord_axis={'xy': None, 'yz': None, 'xz': None, 'boundary': None}, dilate_amount=0.9,
-                       view_planes=False, gridsize=0.1, gridColor="rgb(2 30, 230, 255)",
+                       view_planes=False, gridsize=0.1, gridColor="rgb(230, 230, 255)",
                        opacity=0.2, opacityP=1, hide_dots=False, figsize=(950, 800),
                        showbackground=True, showlegend=True, showedges=True, colormap='jet',
                        saveFig=False,extension='png',room_opacity=0.3, colorbar=True, showticklabels=True, info=True, title=True,
@@ -2369,7 +2383,6 @@ class FEM3D:
                        renderer=None,centerc=None,eyec=None,upc=None):
         """
         Plots pressure field in boundaries and sections.
-
         Parameters
         ----------
         Pmin : TYPE, optional
@@ -2446,12 +2459,10 @@ class FEM3D:
             DESCRIPTION. The default is None.
         upc : TYPE, optional
             DESCRIPTION. The default is None.
-
         Returns
         -------
         fig : TYPE
             DESCRIPTION.
-
         """
         import gmsh
 
@@ -2488,10 +2499,14 @@ class FEM3D:
         path_name = os.path.dirname(path_to_geo)
         tgv = gmsh.model.getEntities(3)
         # ab = gmsh.model.getBoundingBox(3, tgv[0][1])
-        
+    
+        xmin = np.amin(self.nos[:,0])
+        xmax = np.amax(self.nos[:,0])
+        ymin = np.amin(self.nos[:,1])
+        ymax = np.amax(self.nos[:,1])
         zmin = np.amin(self.nos[:,2])
-        zmax = np.amax(self.nos[:,2]) 
-        
+        zmax = np.amax(self.nos[:,2])
+    
         if coord_axis['xy'] is None:
             coord_axis['xy'] = self.R.coord[0, 2] - 0.01
     
@@ -2504,24 +2519,14 @@ class FEM3D:
         if coord_axis['boundary'] is None:
             coord_axis['boundary'] = (zmin + zmax) / 2
         # with suppress_stdout():
-            
-        xmin = np.amin(self.nos[:,0]) 
-        xmax = np.amax(self.nos[:,0]) 
-        ymin = np.amin(self.nos[:,1])
-        ymax = np.amax(self.nos[:,1])
-        
-        #indx = np.extract(self.nos[:,1] == ymax and self.nos[:,2] == self.nos[closest_node(self.nos, coord_axis['xy']),2]) #fixar a coordenada z?
-        #xmax_m = self.nos[indx,0]
-
-
         if 'xy' in axis:
             gmsh.clear()
             gmsh.open(path_to_geo)
             tgv = gmsh.model.getEntities(3)
-            gmsh.model.occ.addPoint(0.4752238-0.1, 0.3-0.1, 0.03, 0., 3001)
-            gmsh.model.occ.addPoint(1.075224+0.1, 0.3-0.1, 0.03, 0., 3002)
-            gmsh.model.occ.addPoint(1.075224+0.1, 0.9+0.1, 0.03, 0., 3003) #alterado para o caso da minicamara
-            gmsh.model.occ.addPoint(0.4752238-0.1, 0.9+0.1, 0.03, 0., 3004)
+            gmsh.model.occ.addPoint(xmin, ymin, coord_axis['xy'], 0., 3001)
+            gmsh.model.occ.addPoint(xmax, ymin, coord_axis['xy'], 0., 3002)
+            gmsh.model.occ.addPoint(xmax, ymax, coord_axis['xy'], 0., 3003)
+            gmsh.model.occ.addPoint(xmin, ymax, coord_axis['xy'], 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
@@ -2531,19 +2536,6 @@ class FEM3D:
             gmsh.model.addPhysicalGroup(2, [15000], 15000)
     
             gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
-            # gmsh.model.occ.addPoint(xmin, ymin, coord_axis['xy'], 0., 3001)
-            # gmsh.model.occ.addPoint(xmax, ymin, coord_axis['xy'], 0., 3002)
-            # gmsh.model.occ.addPoint(xmax-0.25, ymax, coord_axis['xy'], 0., 3003) #alterado para o caso da minicamara
-            # gmsh.model.occ.addPoint(xmin, ymax, coord_axis['xy'], 0., 3004)
-            # gmsh.model.occ.addLine(3001, 3004, 3001)
-            # gmsh.model.occ.addLine(3004, 3003, 3002)
-            # gmsh.model.occ.addLine(3003, 3002, 3003)
-            # gmsh.model.occ.addLine(3002, 3001, 3004)
-            # gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
-            # gmsh.model.occ.addPlaneSurface([15000], 15000)
-            # gmsh.model.addPhysicalGroup(2, [15000], 15000)
-    
-            # gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
     
             # gmsh.model.occ.dilate([(2, 15000)],
             #                       (xmin + xmax) / 2, (ymin + ymax) / 2, coord_axis['xy'],
@@ -2561,37 +2553,8 @@ class FEM3D:
             tgv = gmsh.model.getEntities(3)
             gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmin, 0., 3001)
             gmsh.model.occ.addPoint(coord_axis['yz'], ymax, zmin, 0., 3002)
-            gmsh.model.occ.addPoint(coord_axis['yz'], ymax, 0.9, 0., 3003) # modificado caso da minicamara
+            gmsh.model.occ.addPoint(coord_axis['yz'], ymax, zmax, 0., 3003)
             gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmax, 0., 3004)
-            gmsh.model.occ.addLine(3001, 3004, 3001)
-            gmsh.model.occ.addLine(3004, 3003, 3002)
-            gmsh.model.occ.addLine(3003, 3002, 3003)
-            gmsh.model.occ.addLine(3002, 3001, 3004)
-            gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
-            gmsh.model.occ.addPlaneSurface([15000], 15000)
-            gmsh.model.addPhysicalGroup(2, [15000], 15000)
-    
-            gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
-    
-            # gmsh.model.occ.dilate([(2, 15000)],
-            #                       coord_axis['yz'], (ymin + ymax) / 2, coord_axis['boundary'],
-            #                       dilate_amount, dilate_amount, dilate_amount)
-            gmsh.model.occ.synchronize()
-            gmsh.model.mesh.generate(2)
-            # gmsh.write(path_name + 'current_field_yz.msh')
-            # gmsh.write(outputs + 'current_field_yz.brep')
-            vtags, vyz, _ = gmsh.model.mesh.getNodes()
-            nyz = vyz.reshape((-1, 3))
-            elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
-            nyzsurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
-            
-            gmsh.clear()
-            gmsh.open(path_to_geo)
-            tgv = gmsh.model.getEntities(3)
-            gmsh.model.occ.addPoint(0.8, ymin, zmin, 0., 3001)
-            gmsh.model.occ.addPoint(0.8, ymax, zmin, 0., 3002)
-            gmsh.model.occ.addPoint(0.8, ymax, 0.9, 0., 3003) # modificado caso da minicamara
-            gmsh.model.occ.addPoint(0.8, ymin, zmax, 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
@@ -2620,9 +2583,9 @@ class FEM3D:
             gmsh.open(path_to_geo)
             tgv = gmsh.model.getEntities(3)
             gmsh.model.occ.addPoint(xmin, coord_axis['xz'], zmin, 0., 3001)
-            gmsh.model.occ.addPoint(1.3, coord_axis['xz'], zmin, 0., 3002)
-            gmsh.model.occ.addPoint(1.3, coord_axis['xz'], 1.1, 0., 3003)
-            gmsh.model.occ.addPoint(xmin, coord_axis['xz'], 1.1, 0., 3004)
+            gmsh.model.occ.addPoint(xmax, coord_axis['xz'], zmin, 0., 3002)
+            gmsh.model.occ.addPoint(xmax, coord_axis['xz'], zmax, 0., 3003)
+            gmsh.model.occ.addPoint(xmin, coord_axis['xz'], zmax, 0., 3004)
             gmsh.model.occ.addLine(3001, 3004, 3001)
             gmsh.model.occ.addLine(3004, 3003, 3002)
             gmsh.model.occ.addLine(3003, 3002, 3003)
@@ -2855,7 +2818,509 @@ class FEM3D:
         elapsed_time = (end - start) / 60
         print(f'\n\tElapsed time to evaluate acoustic field: {elapsed_time:.2f} minutes\n')
         if returnFig:
-            return fig        
+            return fig 
+    # def pressure_field(self, Pmin=None, frequencies=[60], Pmax=None, axis=['xy', 'yz', 'xz', 'boundary'], # Modficiado por Bianca
+    #                    axis_visibility={'xy': True, 'yz': True, 'xz': 'legendonly', 'boundary': True},
+    #                    coord_axis={'xy': None, 'yz': None, 'xz': None, 'boundary': None}, dilate_amount=0.9,
+    #                    view_planes=False, gridsize=0.1, gridColor="rgb(2 30, 230, 255)",
+    #                    opacity=0.2, opacityP=1, hide_dots=False, figsize=(950, 800),
+    #                    showbackground=True, showlegend=True, showedges=True, colormap='jet',
+    #                    saveFig=False,extension='png',room_opacity=0.3, colorbar=True, showticklabels=True, info=True, title=True,
+    #                    axis_labels=['(X) Width [m]', '(Y) Length [m]', '(Z) Height [m]'], showgrid=True,
+    #                    camera_angles=['floorplan', 'section', 'diagonal'], device='CPU',
+    #                    transparent_bg=True, returnFig=False, show=True, filename=None,
+    #                    renderer=None,centerc=None,eyec=None,upc=None):
+    #     """
+    #     Plots pressure field in boundaries and sections.
+
+    #     Parameters
+    #     ----------
+    #     Pmin : TYPE, optional
+    #         DESCRIPTION. The default is None.
+    #     frequencies : TYPE, optional
+    #         DESCRIPTION. The default is [60].
+    #     Pmax : TYPE, optional
+    #         DESCRIPTION. The default is None.
+    #     axis : TYPE, optional
+    #         DESCRIPTION. The default is ['xy', 'yz', 'xz', 'boundary'].
+    #     axis_visibility : TYPE, optional
+    #         DESCRIPTION. The default is {'xy': True, 'yz': True, 'xz': 'legendonly', 'boundary': True}.
+    #     coord_axis : TYPE, optional
+    #         DESCRIPTION. The default is {'xy': None, 'yz': None, 'xz': None, 'boundary': None}.
+    #     dilate_amount : TYPE, optional
+    #         DESCRIPTION. The default is 0.9.
+    #     view_planes : TYPE, optional
+    #         DESCRIPTION. The default is False.
+    #     gridsize : TYPE, optional
+    #         DESCRIPTION. The default is 0.1.
+    #     gridColor : TYPE, optional
+    #         DESCRIPTION. The default is "rgb(230, 230, 255)".
+    #     opacity : TYPE, optional
+    #         DESCRIPTION. The default is 0.2.
+    #     opacityP : TYPE, optional
+    #         DESCRIPTION. The default is 1.
+    #     hide_dots : TYPE, optional
+    #         DESCRIPTION. The default is False.
+    #     figsize : TYPE, optional
+    #         DESCRIPTION. The default is (950, 800).
+    #     showbackground : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     showlegend : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     showedges : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     colormap : TYPE, optional
+    #         DESCRIPTION. The default is 'jet'.
+    #     saveFig : TYPE, optional
+    #         DESCRIPTION. The default is False.
+    #     extension : TYPE, optional
+    #         DESCRIPTION. The default is 'png'.
+    #     room_opacity : TYPE, optional
+    #         DESCRIPTION. The default is 0.3.
+    #     colorbar : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     showticklabels : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     info : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     title : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     axis_labels : TYPE, optional
+    #         DESCRIPTION. The default is ['(X) Width [m]', '(Y) Length [m]', '(Z) Height [m]'].
+    #     showgrid : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     camera_angles : TYPE, optional
+    #         DESCRIPTION. The default is ['floorplan', 'section', 'diagonal'].
+    #     device : TYPE, optional
+    #         DESCRIPTION. The default is 'CPU'.
+    #     transparent_bg : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     returnFig : TYPE, optional
+    #         DESCRIPTION. The default is False.
+    #     show : TYPE, optional
+    #         DESCRIPTION. The default is True.
+    #     filename : TYPE, optional
+    #         DESCRIPTION. The default is None.
+    #     renderer : TYPE, optional
+    #         DESCRIPTION. The default is 'notebook'.
+    #     centerc : TYPE, optional
+    #         DESCRIPTION. The default is None.
+    #     eyec : TYPE, optional
+    #         DESCRIPTION. The default is None.
+    #     upc : TYPE, optional
+    #         DESCRIPTION. The default is None.
+
+    #     Returns
+    #     -------
+    #     fig : TYPE
+    #         DESCRIPTION.
+
+    #     """
+    #     import gmsh
+
+    #     import sys
+    #     # from matplotlib.colors import Normalize
+    #     import plotly
+    #     import plotly.figure_factory as ff
+    #     import plotly.graph_objs as go
+    #     import os
+    #     # import matplotlib.pyplot as plt
+    #     import warnings
+    #     warnings.filterwarnings("ignore")
+
+    #     # from utils.helpers import set_cpu, set_gpu, progress_bar
+    
+    #     start = time.time()
+    #     # Creating planes
+    #     # self.mesh_room()
+    #     try:
+    #         gmsh.finalize()
+    #     except:
+    #         pass
+    #     gmsh.initialize()
+    #     gmsh.option.setNumber("Mesh.CharacteristicLengthMin", gridsize * 0.95)
+    #     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", gridsize)
+    #     # model = self.model
+    #     if self.path_to_geo_unrolled != None:
+    #         path_to_geo = self.path_to_geo_unrolled
+    #     else:
+    #         path_to_geo = self.path_to_geo
+            
+    #     print(path_to_geo)
+    #     filenamez, file_extension = os.path.splitext(path_to_geo)
+    #     path_name = os.path.dirname(path_to_geo)
+    #     tgv = gmsh.model.getEntities(3)
+    #     # ab = gmsh.model.getBoundingBox(3, tgv[0][1])
+        
+    #     zmin = np.amin(self.nos[:,2])
+    #     zmax = np.amax(self.nos[:,2]) 
+        
+    #     if coord_axis['xy'] is None:
+    #         coord_axis['xy'] = self.R.coord[0, 2] - 0.01
+    
+    #     if coord_axis['yz'] is None:
+    #         coord_axis['yz'] = self.R.coord[0, 0]
+    
+    #     if coord_axis['xz'] is None:
+    #         coord_axis['xz'] = self.R.coord[0, 1]
+    
+    #     if coord_axis['boundary'] is None:
+    #         coord_axis['boundary'] = (zmin + zmax) / 2
+    #     # with suppress_stdout():
+            
+    #     xmin = np.amin(self.nos[:,0]) 
+    #     xmax = np.amax(self.nos[:,0]) 
+    #     ymin = np.amin(self.nos[:,1])
+    #     ymax = np.amax(self.nos[:,1])
+        
+    #     #indx = np.extract(self.nos[:,1] == ymax and self.nos[:,2] == self.nos[closest_node(self.nos, coord_axis['xy']),2]) #fixar a coordenada z?
+    #     #xmax_m = self.nos[indx,0]
+
+
+    #     if 'xy' in axis:
+    #         gmsh.clear()
+    #         gmsh.open(path_to_geo)
+    #         tgv = gmsh.model.getEntities(3)
+    #         gmsh.model.occ.addPoint(0.4752238-0.1, 0.3-0.1, 0.03, 0., 3001)
+    #         gmsh.model.occ.addPoint(1.075224+0.1, 0.3-0.1, 0.03, 0., 3002)
+    #         gmsh.model.occ.addPoint(1.075224+0.1, 0.9+0.1, 0.03, 0., 3003) #alterado para o caso da minicamara
+    #         gmsh.model.occ.addPoint(0.4752238-0.1, 0.9+0.1, 0.03, 0., 3004)
+    #         gmsh.model.occ.addLine(3001, 3004, 3001)
+    #         gmsh.model.occ.addLine(3004, 3003, 3002)
+    #         gmsh.model.occ.addLine(3003, 3002, 3003)
+    #         gmsh.model.occ.addLine(3002, 3001, 3004)
+    #         gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+    #         gmsh.model.occ.addPlaneSurface([15000], 15000)
+    #         gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+    #         gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    #         # gmsh.model.occ.addPoint(xmin, ymin, coord_axis['xy'], 0., 3001)
+    #         # gmsh.model.occ.addPoint(xmax, ymin, coord_axis['xy'], 0., 3002)
+    #         # gmsh.model.occ.addPoint(xmax-0.25, ymax, coord_axis['xy'], 0., 3003) #alterado para o caso da minicamara
+    #         # gmsh.model.occ.addPoint(xmin, ymax, coord_axis['xy'], 0., 3004)
+    #         # gmsh.model.occ.addLine(3001, 3004, 3001)
+    #         # gmsh.model.occ.addLine(3004, 3003, 3002)
+    #         # gmsh.model.occ.addLine(3003, 3002, 3003)
+    #         # gmsh.model.occ.addLine(3002, 3001, 3004)
+    #         # gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+    #         # gmsh.model.occ.addPlaneSurface([15000], 15000)
+    #         # gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+    #         # gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    
+    #         # gmsh.model.occ.dilate([(2, 15000)],
+    #         #                       (xmin + xmax) / 2, (ymin + ymax) / 2, coord_axis['xy'],
+    #         #                       dilate_amount, dilate_amount, dilate_amount)
+    #         gmsh.model.occ.synchronize()
+    #         gmsh.model.mesh.generate(2)
+    #         vtags, vxy, _ = gmsh.model.mesh.getNodes()
+    #         nxy = vxy.reshape((-1, 3))
+    #         elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
+    #         nxysurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
+    
+    #     if 'yz' in axis:
+    #         gmsh.clear()
+    #         gmsh.open(path_to_geo)
+    #         tgv = gmsh.model.getEntities(3)
+    #         gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmin, 0., 3001)
+    #         gmsh.model.occ.addPoint(coord_axis['yz'], ymax, zmin, 0., 3002)
+    #         gmsh.model.occ.addPoint(coord_axis['yz'], ymax, 0.9, 0., 3003) # modificado caso da minicamara
+    #         gmsh.model.occ.addPoint(coord_axis['yz'], ymin, zmax, 0., 3004)
+    #         gmsh.model.occ.addLine(3001, 3004, 3001)
+    #         gmsh.model.occ.addLine(3004, 3003, 3002)
+    #         gmsh.model.occ.addLine(3003, 3002, 3003)
+    #         gmsh.model.occ.addLine(3002, 3001, 3004)
+    #         gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+    #         gmsh.model.occ.addPlaneSurface([15000], 15000)
+    #         gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+    #         gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    
+    #         # gmsh.model.occ.dilate([(2, 15000)],
+    #         #                       coord_axis['yz'], (ymin + ymax) / 2, coord_axis['boundary'],
+    #         #                       dilate_amount, dilate_amount, dilate_amount)
+    #         gmsh.model.occ.synchronize()
+    #         gmsh.model.mesh.generate(2)
+    #         # gmsh.write(path_name + 'current_field_yz.msh')
+    #         # gmsh.write(outputs + 'current_field_yz.brep')
+    #         vtags, vyz, _ = gmsh.model.mesh.getNodes()
+    #         nyz = vyz.reshape((-1, 3))
+    #         elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
+    #         nyzsurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
+            
+    #         gmsh.clear()
+    #         gmsh.open(path_to_geo)
+    #         tgv = gmsh.model.getEntities(3)
+    #         gmsh.model.occ.addPoint(0.8, ymin, zmin, 0., 3001)
+    #         gmsh.model.occ.addPoint(0.8, ymax, zmin, 0., 3002)
+    #         gmsh.model.occ.addPoint(0.8, ymax, 0.9, 0., 3003) # modificado caso da minicamara
+    #         gmsh.model.occ.addPoint(0.8, ymin, zmax, 0., 3004)
+    #         gmsh.model.occ.addLine(3001, 3004, 3001)
+    #         gmsh.model.occ.addLine(3004, 3003, 3002)
+    #         gmsh.model.occ.addLine(3003, 3002, 3003)
+    #         gmsh.model.occ.addLine(3002, 3001, 3004)
+    #         gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+    #         gmsh.model.occ.addPlaneSurface([15000], 15000)
+    #         gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+    #         gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    
+    #         # gmsh.model.occ.dilate([(2, 15000)],
+    #         #                       coord_axis['yz'], (ymin + ymax) / 2, coord_axis['boundary'],
+    #         #                       dilate_amount, dilate_amount, dilate_amount)
+    #         gmsh.model.occ.synchronize()
+    #         gmsh.model.mesh.generate(2)
+    #         # gmsh.write(path_name + 'current_field_yz.msh')
+    #         # gmsh.write(outputs + 'current_field_yz.brep')
+    #         vtags, vyz, _ = gmsh.model.mesh.getNodes()
+    #         nyz = vyz.reshape((-1, 3))
+    #         elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
+    #         nyzsurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
+            
+    
+    #     if 'xz' in axis:
+    #         gmsh.clear()
+    #         gmsh.open(path_to_geo)
+    #         tgv = gmsh.model.getEntities(3)
+    #         gmsh.model.occ.addPoint(xmin, coord_axis['xz'], zmin, 0., 3001)
+    #         gmsh.model.occ.addPoint(1.3, coord_axis['xz'], zmin, 0., 3002)
+    #         gmsh.model.occ.addPoint(1.3, coord_axis['xz'], 1.1, 0., 3003)
+    #         gmsh.model.occ.addPoint(xmin, coord_axis['xz'], 1.1, 0., 3004)
+    #         gmsh.model.occ.addLine(3001, 3004, 3001)
+    #         gmsh.model.occ.addLine(3004, 3003, 3002)
+    #         gmsh.model.occ.addLine(3003, 3002, 3003)
+    #         gmsh.model.occ.addLine(3002, 3001, 3004)
+    #         gmsh.model.occ.addCurveLoop([3004, 3001, 3002, 3003], 15000)
+    #         gmsh.model.occ.addPlaneSurface([15000], 15000)
+    #         gmsh.model.addPhysicalGroup(2, [15000], 15000)
+    
+    #         gmsh.model.occ.intersect(tgv, [(2, 15000)], 15000, True, True)
+    
+    #         # gmsh.model.occ.dilate([(2, 15000)],
+    #         #                       (xmin + xmax) / 2, coord_axis['xz'], (zmin + zmax) / 2,
+    #         #                       dilate_amount, dilate_amount, dilate_amount)
+    #         gmsh.model.occ.synchronize()
+    #         gmsh.model.mesh.generate(2)
+    #         vtags, vxz, _ = gmsh.model.mesh.getNodes()
+    #         nxz = vxz.reshape((-1, 3))
+    #         elemTys,elemTas,nodeTagss = gmsh.model.mesh.getElements(2)
+    #         nxzsurf = np.array(nodeTagss,dtype=int).reshape(-1,3)-1
+    
+    #     # if view_planes:
+    #     #     gmsh.clear()
+    #     #     gmsh.merge(outputs + 'current_mesh.brep')
+    #     #     gmsh.merge(outputs + 'boundary_field.brep')
+    #     #     gmsh.merge(outputs + 'current_field_xy.brep')
+    #     #     gmsh.merge(outputs + 'current_field_yz.brep')
+    #     #     gmsh.merge(outputs + 'current_field_xz.brep')
+    #     #     gmsh.model.mesh.generate(2)
+    #     #     gmsh.model.occ.synchronize()
+    #     #     gmsh.fltk.run()
+    #     gmsh.finalize()
+
+    #     # Field plane evaluation
+    #     prog = 0
+    #     # for fi in frequencies:
+    #     # if len(frequencies) > 1:
+    #     #     progress_bar(prog / len(frequencies))
+            
+    #     fi = np.argwhere(self.freq==frequencies)[0][0]
+    #     # boundData = self.bem.simulation._solution_data[idx]
+
+
+
+            
+    #     # print(fi)
+    #     unq = np.unique(self.elem_surf)
+    #     uind = np.arange(np.amin(unq),np.amax(unq)+1,1,dtype=int)
+    #     if 'xy' in axis:
+    #         pxy = np.zeros([len(nxy),1],dtype = np.complex128).ravel()
+    #         for i in tqdm(range(len(nxy))):
+    #             # pxy[i] = closest_node(self.nos,nxy[i,:])
+    #             # print(coord_interpolation(self.nos, self.elem_vol, nxy[i,:], self.pN)[fi])
+    #             pxy[i] = coord_interpolation(self.nos, self.elem_vol, nxy[i,:], self.pN)[fi][0]
+    #         values_xy = np.real(p2SPL(pxy))
+
+    #     if 'yz' in axis:             
+    #         pyz = np.zeros([len(nyz),1],dtype = np.complex128).ravel()
+    #         for i in tqdm(range(len(nyz))):
+    #             pyz[i] = coord_interpolation(self.nos, self.elem_vol, nyz[i,:], self.pN)[fi][0]
+    #         values_yz = np.real(p2SPL(pyz))
+    #     if 'xz' in axis:
+    #         pxz = np.zeros([len(nxz),1],dtype = np.complex128).ravel()
+    #         for i in tqdm(range(len(nxz))):
+    #             pxz[i] = coord_interpolation(self.nos, self.elem_vol, nxz[i,:], self.pN)[fi][0]
+    #             # print(coord_interpolation(self.nos, self.elem_vol, nxz[i,:], self.pN)[fi][0])
+    #         # print(pxz)                
+    #         values_xz = np.real(p2SPL(pxz))
+    #     if 'boundary' in axis:     
+
+    #         values_boundary = np.real(p2SPL(self.pN[fi,uind]))  
+    #     # Plotting
+    #     if renderer is not None:
+    #         plotly.io.renderers.default = renderer
+
+    #     if info is False:
+    #         showgrid = False
+    #         title = False
+    #         showticklabels = False
+    #         colorbar = False
+    #         showlegend = False
+    #         showbackground = False
+    #         axis_labels = ['', '', '']
+
+    #     # Room
+    #     vertices = self.nos.T#[np.unique(self.elem_surf)].T
+    #     elements = self.elem_surf.T
+        
+    #     fig = ff.create_trisurf(
+    #         x=vertices[0, :],
+    #         y=vertices[1, :],
+    #         z=vertices[2, :],
+    #         simplices=elements.T,
+    #         color_func=elements.shape[1] * ["rgb(255, 222, 173)"],)
+    #     fig['data'][0].update(opacity=room_opacity)
+    #     fig.update_layout(title=dict(text = f'Frequency: {(np.real(self.freq[fi])):.2f} Hz'))
+    #     # Planes
+    #     # grid = boundData[0].space.grid
+    #     # vertices = grid.vertices
+    #     # elements = grid.elements
+    #     # local_coordinates = np.array([[1.0 / 3], [1.0 / 3]])
+    #     # values = np.zeros(grid.entity_count(0), dtype="float64")
+    #     # for element in grid.entity_iterator(0):
+    #     #     index = element.index
+    #     #     local_values = np.real(20 * np.log10(np.abs((boundData[0].evaluate(index, local_coordinates))) / 2e-5))
+    #     #     values[index] = local_values.flatten()
+    #     if Pmin is None:
+    #         Pmin = min(values_xy)
+    #     if Pmax is None:
+    #         Pmax = max(values_xy)
+
+    #     colorbar_dict = {'title': 'SPL [dB]',
+    #                      'titlefont': {'color': 'black'},
+    #                      'title_side': 'right',
+    #                      'tickangle': -90,
+    #                      'tickcolor': 'black',
+    #                      'tickfont': {'color': 'black'}, }
+
+    #     if 'xy' in axis:
+    #         vertices = nxy.T
+    #         elements = nxysurf.T
+    #         fig.add_trace(go.Mesh3d(x=vertices[0, :], y=vertices[1, :], z=vertices[2, :],
+    #                                 i=elements[0, :], j=elements[1, :], k=elements[2, :], intensity=values_xy,
+    #                                 colorscale=colormap, intensitymode='vertex', name='XY', showlegend=showlegend,
+    #                                 visible=axis_visibility['xy'], cmin=Pmin, cmax=Pmax, opacity=opacityP,
+    #                                 showscale=colorbar, colorbar=colorbar_dict))
+    #         fig['layout']['scene'].update(go.layout.Scene(aspectmode='data'))
+    #     if 'yz' in axis:
+    #         vertices = nyz.T
+    #         elements = nyzsurf.T
+    #         fig.add_trace(go.Mesh3d(x=vertices[0, :], y=vertices[1, :], z=vertices[2, :],
+    #                                 i=elements[0, :], j=elements[1, :], k=elements[2, :], intensity=values_yz,
+    #                                 colorscale=colormap, intensitymode='vertex', name='YZ', showlegend=showlegend,
+    #                                 visible=axis_visibility['yz'], cmin=Pmin, cmax=Pmax, opacity=opacityP,
+    #                                 showscale=colorbar, colorbar=colorbar_dict))
+    #         fig['layout']['scene'].update(go.layout.Scene(aspectmode='data'))
+    #     if 'xz' in axis:
+    #         vertices = nxz.T
+    #         elements = nxzsurf.T
+    #         fig.add_trace(go.Mesh3d(x=vertices[0, :], y=vertices[1, :], z=vertices[2, :],
+    #                                 i=elements[0, :], j=elements[1, :], k=elements[2, :], intensity=values_xz,
+    #                                 colorscale=colormap, intensitymode='vertex', name='XZ', showlegend=showlegend,
+    #                                 visible=axis_visibility['xz'], cmin=Pmin, cmax=Pmax, opacity=opacityP,
+    #                                 showscale=colorbar, colorbar=colorbar_dict))
+    #         fig['layout']['scene'].update(go.layout.Scene(aspectmode='data'))
+    #     if 'boundary' in axis:
+    #         vertices = self.nos[uind].T
+    #         elements = self.elem_surf.T
+    #         fig.add_trace(go.Mesh3d(x=vertices[0, :], y=vertices[1, :], z=vertices[2, :],
+    #                                 i=elements[0, :], j=elements[1, :], k=elements[2, :], intensity=values_boundary,
+    #                                 colorscale=colormap, intensitymode='vertex', name='Boundary', showlegend=showlegend,
+    #                                 visible=axis_visibility['boundary'], cmin=Pmin, cmax=Pmax, opacity=opacityP,
+    #                                 showscale=colorbar, colorbar=colorbar_dict))
+    #         fig['layout']['scene'].update(go.layout.Scene(aspectmode='data'))
+    #     if not hide_dots:
+    #         try:
+    #             if self.R != None:
+    #                 fig.add_trace(go.Scatter3d(x = self.R.coord[:,0], y = self.R.coord[:,1], z = self.R.coord[:,2],name="Receivers",mode='markers'))
+    #         except:
+    #             pass
+            
+    #         if self.S != None:    
+    #             if self.S.wavetype == "spherical":
+    #                 fig.add_trace(go.Scatter3d(x = self.S.coord[:,0], y = self.S.coord[:,1], z = self.S.coord[:,2],name="Sources",mode='markers'))
+                   
+                    
+                    
+    #     fig['layout']['scene'].update(go.layout.Scene(aspectmode='data'))
+    #     fig.update_layout(legend_orientation="h", legend=dict(x=0, y=1),
+    #                       width=figsize[0], height=figsize[1],
+    #                       scene=dict(xaxis_title=axis_labels[0],
+    #                                  yaxis_title=axis_labels[1],
+    #                                  zaxis_title=axis_labels[2],
+    #                                  xaxis=dict(showticklabels=showticklabels, showgrid=showgrid,
+    #                                             showline=showgrid, zeroline=showgrid),
+    #                                  yaxis=dict(showticklabels=showticklabels, showgrid=showgrid,
+    #                                             showline=showgrid, zeroline=showgrid),
+    #                                  zaxis=dict(showticklabels=showticklabels, showgrid=showgrid,
+    #                                             showline=showgrid, zeroline=showgrid),
+    #                                  ))
+    #     if title is False:
+    #         fig.update_layout(title="")
+    #     if transparent_bg:
+    #         fig.update_layout({'plot_bgcolor': 'rgba(0, 0, 0, 0)',
+    #                            'paper_bgcolor': 'rgba(0, 0, 0, 0)', }, )
+    #     if saveFig:
+    #         # folderCheck = os.path.exists('/Layout')
+    #         # if folderCheck is False:
+    #         #     os.mkdir('/Layout')
+    #         for camera in camera_angles:
+    #             if camera == 'top' or camera == 'floorplan':
+    #                 camera_dict = dict(eye=dict(x=0., y=0., z=2.5),
+    #                                    up=dict(x=0, y=1, z=0),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'lateral' or camera == 'side' or camera == 'section':
+    #                 camera_dict = dict(eye=dict(x=2.5, y=0., z=0.0),
+    #                                    up=dict(x=0, y=0, z=1),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'front':
+    #                 camera_dict = dict(eye=dict(x=0., y=2.5, z=0.),
+    #                                    up=dict(x=0, y=1, z=0),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'rear' or camera == 'back':
+    #                 camera_dict = dict(eye=dict(x=0., y=-2.5, z=0.),
+    #                                    up=dict(x=0, y=1, z=0),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'diagonal_front':
+    #                 camera_dict = dict(eye=dict(x=1.50, y=1.50, z=1.50),
+    #                                    up=dict(x=0, y=0, z=1),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'diagonal_rear':
+    #                 camera_dict = dict(eye=dict(x=-1.50, y=-1.50, z=1.50),
+    #                                    up=dict(x=0, y=0, z=1),
+    #                                    center=dict(x=0, y=0, z=0), )
+    #             elif camera == 'custom':
+    #                 camera_dict = dict(eye=dict(x=eyec[0], y=eyec[1], z=eyec[2]),
+    #                                    up=dict(x=upc[0], y=upc[1], z=upc[2]),
+    #                                    center=dict(x=centerc[0], y=centerc[1], z=centerc[2]), )
+    #             fig.update_layout(scene_camera=camera_dict)
+
+    #         if filename is None:
+    #             fig.write_image(f'_3D_{camera}_{time.strftime("%Y%m%d-%H%M%S")}.{extension}', scale=2)
+    #         else:
+    #             fig.write_image(filename+'.'+extension, scale=2)
+
+    #     if show:
+    #         plotly.offline.iplot(fig)
+    #     prog += 1
+    
+    #     end = time.time()
+    #     elapsed_time = (end - start) / 60
+    #     print(f'\n\tElapsed time to evaluate acoustic field: {elapsed_time:.2f} minutes\n')
+    #     if returnFig:
+    #         return fig        
+
+    
         
     def pytta_obj(self):
         return IR(self.pR,self.AC,self.freq[0],self.freq[-1])

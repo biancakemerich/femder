@@ -134,7 +134,10 @@ class GridImport3D:
             tg2 = gmsh.model.getEntities(2)
             if len(pg) == 0:
                 surfaces_entities = tg2
-                pg_start = 2
+                if len(pgv) > 1:
+                    pg_start = len(pgv) + 1
+                else:
+                    pg_start = 2
                 physical_groups = [i for i in range(pg_start, len(surfaces_entities) + pg_start)]
                 for entity, i in zip(surfaces_entities, range(len(surfaces_entities))):
                     gmsh.model.addPhysicalGroup(entity[0], [entity[1]], physical_groups[i])
