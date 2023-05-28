@@ -1272,14 +1272,14 @@ class FEM3D:
         #     self.Q = np.zeros([self.NumNosC,self.NumNosC],dtype =  np.cfloat)
         # self.A = np.zeros([self.NumNosC,self.NumNosC,len(self.number_ID_faces)],dtype =  np.cfloat)
         # self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)
-        if len(self.S.q.shape)>1:
+        if self.S.q.shape[0]>1:
             self.q = np.zeros([self.NumNosC,len(self.freq)],dtype = np.cfloat)
         else:
             self.q = np.zeros([self.NumNosC,1],dtype = np.cfloat)  
 
         if self.S is not None:
             for ii in range(len(self.S.coord)):
-                if len(self.q.shape)>1:
+                if self.q.shape[0]>1:
                     self.q[closest_node(self.nos,self.S.coord[ii,:]),:] = self.S.q[ii].ravel()
                 else:
                     self.q[closest_node(self.nos,self.S.coord[ii,:])] = self.S.q[ii].ravel()
@@ -1327,7 +1327,7 @@ class FEM3D:
                             Ag += self.A[i]*self.mu[bl].ravel()[N]#/(self.rho0*self.c0)
                             i+=1
                         G = self.H + 1j*self.w[N]*Ag - (self.w[N]**2)*self.Q
-                        if len(self.S.q.shape)>1:
+                        if self.S.q.shape[0]>1:
                             b = -1j*self.w[N]*self.q[:,N]
                         else: 
                             b = -1j*self.w[N]*self.q
@@ -1414,7 +1414,7 @@ class FEM3D:
                         self.H,self.Q = assemble_Q_H_4_FAST_2order_equifluid(self.NumElemC,self.NumNosC,self.elem_vol,self.nos,self.c,self.rho,self.domain_index_vol,N)
                     
                     G = self.H + 1j*self.w[N]*Ag - (self.w[N]**2)*self.Q
-                    if len(self.S.q.shape)>1:
+                    if self.S.q.shape[0]>1:
                         b = -1j*self.w[N]*self.q[:,N]
                     else: 
                         b = -1j*self.w[N]*self.q
@@ -2105,7 +2105,7 @@ class FEM3D:
             closest_node_to_receiver = closest_node(self.nos, self.R.coord[i, :])
             pt_dist = np.linalg.norm(
                     self.R.coord[i, :] - self.nos[closest_node_to_receiver])
-            print(pt_dist)
+            #print(pt_dist)
             if pt_dist < interpolation_tolerance:
                 self.pR.append(self.pN[:, closest_node(self.nos, R.coord[i, :])].reshape(len(self.freq),1))
             else:
